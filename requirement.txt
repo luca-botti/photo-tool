@@ -1,0 +1,4 @@
+rich
+Pillow
+requests
+pydantic
