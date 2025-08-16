@@ -2,3 +2,5 @@ rich
 Pillow
 requests
 pydantic
+pymediainfo
+filelock

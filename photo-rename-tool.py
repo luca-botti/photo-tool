@@ -13,13 +13,16 @@ import argparse
 import re
 import shutil
 import ast
-from datetime import datetime
+import json
+from datetime import datetime, timezone
 from pathlib import Path
 from PIL import Image
 from PIL.ExifTags import TAGS, GPSTAGS
+from filelock import FileLock
 
 from utils.geo_reverse_coder import ReverseGeocoder, GeoData
 from utils.logger import Logger, LogLevel
+from pymediainfo import MediaInfo
 
 
 def convert_string_to_tuple(coord_string: str | None) -> tuple[str, str, str] | None:
@@ -38,13 +41,14 @@ def convert_string_to_tuple(coord_string: str | None) -> tuple[str, str, str] | 
 
 
 def get_image_data(image_path: Path) -> dict[str, str | dict[str, str]]:
-    """Extract data from image."""
+    """Extract data from file."""
     data: dict[str, str | dict[str, str]] = {}
     mod_time = datetime.fromtimestamp(os.path.getmtime(image_path))
     data["FileModifiedDate"] = mod_time.strftime("%Y:%m:%d %H:%M:%S")
 
-    with Image.open(image_path) as image:
-        exif_data = image.getexif()
+    if image_path.suffix.lower() in image_extensions:
+        with Image.open(image_path) as image:
+            exif_data = image.getexif()
 
         if exif_data:
 
@@ -104,6 +108,33 @@ def get_image_data(image_path: Path) -> dict[str, str | dict[str, str]]:
                         str(val).rstrip().rstrip("\x00")
                     )
                 data["GPSInfo"] = gps_dict
+        del image
+    elif image_path.suffix.lower() in video_extensions:
+        media_info = MediaInfo.parse(image_path)
+        if (
+            media_info
+            and media_info.general_tracks
+            and len(media_info.general_tracks) > 0
+        ):
+            logger.trace(json.dumps(media_info.to_data(), indent=2))
+            general_track = media_info.general_tracks[0]
+            if general_track.performer:
+                data["Model"] = general_track.performer
+            if general_track.xyz:
+                xyz = general_track.xyz.strip("/")
+                matches = re.findall(r"[+-]\d+\.\d+", xyz)
+                latitude, longitude = map(float, matches)
+                gps_dict: dict[str, str] = {}
+                gps_dict["GPSLatitude"] = f"{latitude}"
+                gps_dict["GPSLongitude"] = f"{longitude}"
+                data["GPSInfo"] = gps_dict
+            if general_track.tagged_date:
+                data["DateTimeOriginal"] = general_track.tagged_date
+            if general_track.file_last_modification_date:
+                data["ModifyDate"] = general_track.file_last_modification_date
+            if general_track.file_creation_date:
+                data["CreateDate"] = general_track.file_creation_date
+        del media_info
 
     logger.debug(f"{image_path.name} Data:")
     for tag, value in data.items():
@@ -175,24 +206,41 @@ def normalize_dict_results(data: dict[str, str] | str | None) -> str | None:
     return data
 
 
+def normalize_datetime(date_str: str) -> datetime | None:
+    """Normalize the datetime string to a consistent format."""
+    formats = [
+        "%Y:%m:%d %H:%M:%S",
+        "%Y-%m-%d %H:%M:%S.%f",
+        "%Y-%m-%d %H:%M:%S",
+    ]
+    utc = date_str.find("UTC") != -1
+    temp = date_str.replace(" UTC", "")
+    for fmt in formats:
+        try:
+            date = datetime.strptime(temp, fmt)
+            if utc:
+                date = date.replace(tzinfo=timezone.utc)
+                date = date.astimezone()
+            return date
+        except ValueError:
+            continue
+
+    logger.critical(f"Invalid date format: {date_str}")
+    return None
+
+
 def process_file(file_path: Path, disable_api: bool = False) -> bool:
     """Process a single image file."""
-    if file_path.suffix.lower() not in image_extensions:
+    if (
+        file_path.suffix.lower() not in image_extensions
+        and file_path.suffix.lower() not in video_extensions
+    ):
         return False
+    lock = FileLock(str(file_path) + ".lock")
 
-    data = get_image_data(file_path)
+    with lock:
+        data = get_image_data(file_path)
 
-<<<<<<< Updated upstream
-    date = data.get("ModifyDate") or data.get("FileModifiedDate")
-    if not date or not isinstance(date, str):
-        logger.error(f"Invalid date format: {date}")
-        return False
-
-    try:
-        date = datetime.strptime(date, "%Y:%m:%d %H:%M:%S")
-    except ValueError:
-        logger.critical(f"Invalid date format: {date}")
-=======
     date_original = (
         data.get("DateTimeOriginal")
         or data.get("ModifyDate")
@@ -204,23 +252,30 @@ def process_file(file_path: Path, disable_api: bool = False) -> bool:
 
     date = normalize_datetime(date_original)
     if not date:
-        logger.critical(
-            f"Failed to normalize date: {date_original}, on file {file_path.name}"
-        )
+        logger.error(f"Failed to normalize date: {date}")
         return False
->>>>>>> Stashed changes
 
     if not disable_api:
         location = data.get("GPSInfo")
         if location and isinstance(location, dict):
-            lat = convert_string_to_tuple(location.get("GPSLatitude"))
             lat_ref = location.get("GPSLatitudeRef")
-            lon = convert_string_to_tuple(location.get("GPSLongitude"))
             lon_ref = location.get("GPSLongitudeRef")
-            if lat and lon and lat_ref and lon_ref:
-                location = geo_reverse.get_location_from_gps(lat, lat_ref, lon, lon_ref)
+            if lat_ref and lon_ref:
+                lat = convert_string_to_tuple(location.get("GPSLatitude"))
+                lon = convert_string_to_tuple(location.get("GPSLongitude"))
+                if lat and lon:
+                    location = geo_reverse.get_location_from_gps(
+                        lat, lat_ref, lon, lon_ref
+                    )
+                else:
+                    location = None
             else:
-                location = None
+                lat = float(location.get("GPSLatitude", 0))
+                lon = float(location.get("GPSLongitude", 0))
+                if lat and lon:
+                    location = geo_reverse.get_location_from_lat_lon(lat, lon)
+                else:
+                    location = None
         else:
             logger.debug(f"No GPS location data found for {file_path.name}.")
             location = None
@@ -251,20 +306,22 @@ def process_file(file_path: Path, disable_api: bool = False) -> bool:
     if dry_run:
         logger.no_header(f"[DRY RUN] {file_path.name} -> {destination_path_filename}")
     else:
-        destination_path = Path(destination).parent
-        destination_path.mkdir(parents=True, exist_ok=True)
-        if move_mode:
-            file_path.rename(destination)
-        else:
-            shutil.copy2(file_path, destination)
-        logger.debug(f"[DONE] {file_path.name} -> {destination_path_filename}")
+        with lock:
+            destination_path = destination.parent
+            destination_path.mkdir(parents=True, exist_ok=True)
+            if move_mode:
+                shutil.move(file_path, destination)
+            else:
+                shutil.copy2(file_path, destination)
+            logger.debug(f"[DONE] {file_path.name} -> {destination_path_filename}")
 
     return True
 
 
 def main():
-    global logger, image_extensions, dry_run, move_mode, geo_reverse, destination_directory
+    global logger, image_extensions, video_extensions, dry_run, move_mode, geo_reverse, destination_directory
     image_extensions = {".jpg", ".jpeg", ".png"}
+    video_extensions = {".mp4", ".mkv", ".avi"}
     logger = Logger("PhotoOrganizer", level=LogLevel.INFO)
     geo_reverse = ReverseGeocoder(
         logger=logger, user_agent="PhotoOrganizer/0.1", resolution=4.0
@@ -317,7 +374,8 @@ def main():
     # dry_run = True
 
     if move_mode:
-        logger.warning("Move mode is enabled. Files will be moved instead of copied.")
+        # logger.warning("Move mode is enabled. Files will be moved instead of copied.")
+        logger.critical("Move mode does not work at the moment.")
 
     logger.info(f"Starting photo organization...")
     logger.info(f"Source: {source_dir}")
@@ -327,9 +385,13 @@ def main():
     logger.info("-" * 50)
     logger.info_no_header("")
 
-    # Find all image files
+    # Find all files
     image_files: list[Path] = []
     for ext in image_extensions:
+        image_files.extend(source_dir.rglob(f"*{ext}"))
+        image_files.extend(source_dir.rglob(f"*{ext.upper()}"))
+
+    for ext in video_extensions:
         image_files.extend(source_dir.rglob(f"*{ext}"))
         image_files.extend(source_dir.rglob(f"*{ext.upper()}"))
 
@@ -363,6 +425,7 @@ def main():
         logger.info(f"Error details:")
         for error in errors:
             logger.info(f" - {error}")
+
 
 if __name__ == "__main__":
     main()
