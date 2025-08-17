@@ -51,6 +51,7 @@ def convert_string_to_tuple(coord_string: str | None) -> tuple[str, str, str] | 
 def get_image_data(image_path: Path) -> dict[str, str | dict[str, str]]:
     """Extract data from file."""
     data: dict[str, str | dict[str, str]] = {}
+    invalid_dates = ["0000:00:00 00:00:00", "1970-01-01 00:00:00 UTC"]
     mod_time = datetime.fromtimestamp(os.path.getmtime(image_path))
     data["FileModifiedDate"] = mod_time.strftime("%Y:%m:%d %H:%M:%S")
 
@@ -66,20 +67,14 @@ def get_image_data(image_path: Path) -> dict[str, str | dict[str, str]]:
                 logger.trace(f"{tag}({key}): {value}")
 
             date_taken: str | None = exif_data.get(0x9003)
-            if date_taken:
-                temp = date_taken.rstrip().rstrip("\x00")
-                if temp != "0000:00:00 00:00:00":
-                    data["DateTimeOriginal"] = temp
+            if date_taken and all(temp not in date_taken for temp in invalid_dates):
+                data["DateTimeOriginal"] = date_taken.rstrip().rstrip("\x00")
             create_date: str | None = exif_data.get(0x9004)
-            if create_date:
-                temp = create_date.rstrip().rstrip("\x00")
-                if temp != "0000:00:00 00:00:00":
-                    data["CreateDate"] = temp
+            if create_date and all(temp not in create_date for temp in invalid_dates):
+                data["CreateDate"] = create_date.rstrip().rstrip("\x00")
             modify_date: str | None = exif_data.get(0x0132)
-            if modify_date:
-                temp = modify_date.rstrip().rstrip("\x00")
-                if temp != "0000:00:00 00:00:00":
-                    data["ModifyDate"] = temp
+            if modify_date and all(temp not in modify_date for temp in invalid_dates):
+                data["ModifyDate"] = modify_date.rstrip().rstrip("\x00")
 
             offset_time: str | None = exif_data.get(0x9010)
             if offset_time:
@@ -143,11 +138,18 @@ def get_image_data(image_path: Path) -> dict[str, str | dict[str, str]]:
                 gps_dict["GPSLatitude"] = f"{latitude}"
                 gps_dict["GPSLongitude"] = f"{longitude}"
                 data["GPSInfo"] = gps_dict
-            if general_track.tagged_date:
+            if general_track.tagged_date and all(
+                temp not in general_track.tagged_date for temp in invalid_dates
+            ):
                 data["DateTimeOriginal"] = general_track.tagged_date
-            if general_track.file_last_modification_date:
+            if general_track.file_last_modification_date and all(
+                temp not in general_track.file_last_modification_date
+                for temp in invalid_dates
+            ):
                 data["ModifyDate"] = general_track.file_last_modification_date
-            if general_track.file_creation_date:
+            if general_track.file_creation_date and all(
+                temp not in general_track.file_creation_date for temp in invalid_dates
+            ):
                 data["CreateDate"] = general_track.file_creation_date
         del media_info
 
@@ -412,7 +414,7 @@ def main():
     global logger, image_extensions, video_extensions, dry_run, move_mode, geo_reverse, destination_directory
     done_list: dict[Path, Path] = {}
     image_extensions = {".jpg", ".jpeg", ".png"}
-    video_extensions = {".mp4", ".mkv", ".avi"}
+    video_extensions = {".mp4"}
     logger = Logger("PhotoOrganizer", level=LogLevel.INFO)
     geo_reverse = ReverseGeocoder(
         logger=logger, user_agent="PhotoOrganizer/0.1", resolution=4.0
@@ -479,17 +481,19 @@ def main():
     # Find all files
     image_files: list[Path] = []
     for ext in image_extensions:
-        image_files.extend(source_dir.rglob(f"*{ext}"))
-        image_files.extend(source_dir.rglob(f"*{ext.upper()}"))
-
+        image_files.extend(source_dir.rglob(f"*{ext}", case_sensitive=False))
     for ext in video_extensions:
-        image_files.extend(source_dir.rglob(f"*{ext}"))
-        image_files.extend(source_dir.rglob(f"*{ext.upper()}"))
+        image_files.extend(source_dir.rglob(f"*{ext}", case_sensitive=False))
 
     image_files.sort()
 
     processed_count = 0
     errors: list[Path] = []
+
+    logger.debug(f"Found {len(image_files)} image files to process.")
+    for file in image_files:
+        logger.trace(f"\t {file}")
+    logger.trace_no_header("")
 
     for file_path in image_files:
         if process_file(file_path, done_list, offline_mode):
@@ -503,8 +507,6 @@ def main():
             prefix="Processing",
             bar_length=50,
         )
-        # if processed_count > 10:
-        #     break
     logger.end_progress()
 
     logger.info_no_header("")
