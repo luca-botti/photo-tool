@@ -150,11 +150,24 @@ def sanitize_filename(filename: str) -> str:
     return filename
 
 
+def get_discriminator(path: Path) -> int | None:
+    """
+    Extract the discriminator number before the extension if the filename ends
+    with '.<number>' just before the extension.
+    """
+    stem = path.stem
+    match = re.search(r"\.(\d+)$", stem)
+    if match:
+        return int(match.group(1))
+    return None
+
+
 def generate_final_filename(
     extension: str,
     date: datetime,
     location: GeoData | None,
     camera_model: str | None,
+    discriminator: int | None = None,
 ) -> Path | None:
     """Generate the final filename for the processed image."""
 
@@ -194,6 +207,8 @@ def generate_final_filename(
         new_filename += f"_{location_str}"
     if camera_model:
         new_filename += f"_{camera_model}"
+    if discriminator:
+        new_filename += f".{discriminator}"
     new_filename += extension
 
     return folder / sanitize_filename(new_filename)
@@ -225,11 +240,12 @@ def normalize_datetime(date_str: str) -> datetime | None:
         except ValueError:
             continue
 
-    logger.critical(f"Invalid date format: {date_str}")
     return None
 
 
-def process_file(file_path: Path, disable_api: bool = False) -> bool:
+def process_file(
+    file_path: Path, done_list: dict[Path, Path], disable_api: bool = False
+) -> bool:
     """Process a single image file."""
     if (
         file_path.suffix.lower() not in image_extensions
@@ -252,7 +268,9 @@ def process_file(file_path: Path, disable_api: bool = False) -> bool:
 
     date = normalize_datetime(date_original)
     if not date:
-        logger.error(f"Failed to normalize date: {date}")
+        logger.critical(
+            f"Failed to normalize date: {date_original}, on file {file_path.name}"
+        )
         return False
 
     if not disable_api:
@@ -303,9 +321,32 @@ def process_file(file_path: Path, disable_api: bool = False) -> bool:
 
     destination = destination_directory / destination_path_filename
 
-    if destination.exists():
-        logger.error(f"Destination file {destination} already exists.")
-        return False
+    while destination.exists():
+        original = done_list.get(destination)
+        if original and original != file_path:
+            discriminator = get_discriminator(destination) or 0
+            discriminator += 1
+            destination_path_filename = generate_final_filename(
+                file_path.suffix,
+                date,
+                location,
+                camera_model,
+                discriminator,
+            )
+            if destination_path_filename is None:
+                logger.error(
+                    f"Error generating destination path filename for {file_path.name}."
+                )
+                return False
+            logger.debug(
+                f"Two files with the same destination name found: {file_path.name} and {original.name} to {destination.name}, use discriminator {discriminator} to differentiate."
+            )
+            destination = destination_directory / destination_path_filename
+        else:
+            logger.error(
+                f"Duplicate file {file_path.name} found at {destination.name}."
+            )
+            return False
 
     if dry_run:
         logger.no_header(f"[DRY RUN] {file_path.name} -> {destination_path_filename}")
@@ -319,11 +360,13 @@ def process_file(file_path: Path, disable_api: bool = False) -> bool:
                 shutil.copy2(file_path, destination)
             logger.debug(f"[DONE] {file_path.name} -> {destination_path_filename}")
 
+    done_list[destination] = file_path
     return True
 
 
 def main():
     global logger, image_extensions, video_extensions, dry_run, move_mode, geo_reverse, destination_directory
+    done_list: dict[Path, Path] = {}
     image_extensions = {".jpg", ".jpeg", ".png"}
     video_extensions = {".mp4", ".mkv", ".avi"}
     logger = Logger("PhotoOrganizer", level=LogLevel.INFO)
@@ -405,7 +448,7 @@ def main():
     errors: list[Path] = []
 
     for file_path in image_files:
-        if process_file(file_path, offline_mode):
+        if process_file(file_path, done_list, offline_mode):
             processed_count += 1
         else:
             logger.error(f"Error processing {file_path}")
