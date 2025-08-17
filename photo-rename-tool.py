@@ -27,13 +27,21 @@ from pymediainfo import MediaInfo
 
 def convert_string_to_tuple(coord_string: str | None) -> tuple[str, str, str] | None:
     """Convert a string representation of a tuple to an actual tuple."""
-    if coord_string is None:
+    if coord_string is None or coord_string.strip() == "(0.0, 0.0, 0.0)":
         return None
     try:
         x = tuple(map(str, ast.literal_eval(coord_string)))
         if len(x) != 3:
             logger.error(f"Invalid coordinate tuple: {coord_string}")
             return None
+        unvalid_values = ["", " ", "None", "nan"]
+        for item in x:
+            if item in unvalid_values:
+                logger.error(
+                    f"unvalid string found in coordinate tuple: {coord_string}"
+                )
+                return None
+
         return x
     except (ValueError, SyntaxError):
         logger.error(f"Invalid coordinate string: {coord_string}")
@@ -251,6 +259,36 @@ def normalize_datetime(date_str: str) -> datetime | None:
     return None
 
 
+def normalize_coordinates(coord: str, coord_ref: str | None) -> float | None:
+    """
+    Normalize coordinate
+
+    @coord could be a tuple in form '(degrees, minutes, seconds)' or directly a float number
+    @coord_ref could be 'N', 'S', 'E', 'W' for latitude/longitude reference and will be used only if @coord is a tuple
+    """
+
+    try:
+        degree = float(coord)
+        return degree
+    except ValueError:
+        # this should be a tuple
+        if coord_ref is None:
+            return None
+        tuple = convert_string_to_tuple(coord)
+        if not tuple:
+            return None
+        try:
+            degree = float(tuple[0])
+            minute = float(tuple[1]) if len(tuple) > 1 else 0.0
+            second = float(tuple[2]) if len(tuple) > 2 else 0.0
+
+            return geo_reverse.convert_gps_to_degrees(
+                (degree, minute, second), coord_ref
+            )
+        except ValueError:
+            return None
+
+
 def process_file(
     file_path: Path, done_list: dict[Path, Path], disable_api: bool = False
 ) -> bool:
@@ -281,41 +319,33 @@ def process_file(
         )
         return False
 
+    location: GeoData | None = None
     if not disable_api:
-        location = data.get("GPSInfo")
-        if location and isinstance(location, dict):
-            lat_ref = location.get("GPSLatitudeRef")
-            lon_ref = location.get("GPSLongitudeRef")
-            if lat_ref and lon_ref:
-                lat = convert_string_to_tuple(location.get("GPSLatitude"))
-                lon = convert_string_to_tuple(location.get("GPSLongitude"))
-                if lat and lon:
-                    location = geo_reverse.get_location_from_gps(
-                        lat, lat_ref, lon, lon_ref
-                    )
-                else:
-                    logger.debug(
-                        f"No Valid GPS location data found for {file_path.name}."
-                    )
-                    location = None
-            else:
-                lat = float(location.get("GPSLatitude", 0))
-                lon = float(location.get("GPSLongitude", 0))
+        location_temp = data.get("GPSInfo")
+        if location_temp and isinstance(location_temp, dict):
+            lat_temp = location_temp.get("GPSLatitude")
+            lon_temp = location_temp.get("GPSLongitude")
+            if lat_temp and lon_temp:
+                lat_ref = location_temp.get("GPSLatitudeRef")
+                lon_ref = location_temp.get("GPSLongitudeRef")
+
+                lat = normalize_coordinates(lat_temp, lat_ref)
+                lon = normalize_coordinates(lon_temp, lon_ref)
+
                 if lat and lon:
                     location = geo_reverse.get_location_from_lat_lon(lat, lon)
                 else:
                     logger.debug(
-                        f"No Valid GPS location data found for {file_path.name}."
+                        f"Invalid GPS coordinates found in {file_path.name}: {lat_temp}, {lon_temp}"
                     )
-                    location = None
+            else:
+                logger.debug(f"GPS coordinates not found in {file_path.name}")
         else:
             logger.debug(f"No GPS location data found for {file_path.name}.")
-            location = None
     else:
         logger.trace(
             "Reverse geocoding API is disabled. Location will not be determined."
         )
-        location = None
 
     temp = data.get("Model")
     if temp and isinstance(temp, dict):
