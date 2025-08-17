@@ -298,6 +298,7 @@ def process_file(
     if (
         file_path.suffix.lower() not in image_extensions
         and file_path.suffix.lower() not in video_extensions
+        and file_path.suffix.lower() not in other_extensions
     ):
         return False
     lock = FileLock(str(file_path) + ".lock")
@@ -344,10 +345,6 @@ def process_file(
                 logger.debug(f"GPS coordinates not found in {file_path.name}")
         else:
             logger.debug(f"No GPS location data found for {file_path.name}.")
-    else:
-        logger.trace(
-            "Reverse geocoding API is disabled. Location will not be determined."
-        )
 
     temp = data.get("Model")
     if temp and isinstance(temp, dict):
@@ -411,10 +408,11 @@ def process_file(
 
 
 def main():
-    global logger, image_extensions, video_extensions, dry_run, move_mode, geo_reverse, destination_directory
+    global logger, image_extensions, video_extensions, other_extensions, dry_run, move_mode, geo_reverse, destination_directory
     done_list: dict[Path, Path] = {}
     image_extensions = {".jpg", ".jpeg", ".png"}
     video_extensions = {".mp4"}
+    other_extensions = {".heic", ".mov", ".avi", ".mkv", ".3gp", ".gif", ".mpg"}
     logger = Logger("PhotoOrganizer", level=LogLevel.INFO)
     geo_reverse = ReverseGeocoder(
         logger=logger, user_agent="PhotoOrganizer/0.1", resolution=4.0
@@ -466,6 +464,11 @@ def main():
     offline_mode = args.offline
     # dry_run = True
 
+    if offline_mode:
+        logger.warning(
+            "Reverse geocoding API is disabled. Location will not be determined."
+        )
+
     if move_mode:
         # logger.warning("Move mode is enabled. Files will be moved instead of copied.")
         logger.critical("Move mode does not work at the moment.")
@@ -483,6 +486,8 @@ def main():
     for ext in image_extensions:
         image_files.extend(source_dir.rglob(f"*{ext}"))
     for ext in video_extensions:
+        image_files.extend(source_dir.rglob(f"*{ext}"))
+    for ext in other_extensions:
         image_files.extend(source_dir.rglob(f"*{ext}"))
 
     image_files.sort()
