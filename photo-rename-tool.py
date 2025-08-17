@@ -481,9 +481,9 @@ def main():
     # Find all files
     image_files: list[Path] = []
     for ext in image_extensions:
-        image_files.extend(source_dir.rglob(f"*{ext}", case_sensitive=False))
+        image_files.extend(source_dir.rglob(f"*{ext}"))
     for ext in video_extensions:
-        image_files.extend(source_dir.rglob(f"*{ext}", case_sensitive=False))
+        image_files.extend(source_dir.rglob(f"*{ext}"))
 
     image_files.sort()
 
