@@ -59,13 +59,19 @@ def get_image_data(image_path: Path) -> dict[str, str | dict[str, str]]:
 
             date_taken: str | None = exif_data.get(0x9003)
             if date_taken:
-                data["DateTimeOriginal"] = date_taken.rstrip().rstrip("\x00")
+                temp = date_taken.rstrip().rstrip("\x00")
+                if temp != "0000:00:00 00:00:00":
+                    data["DateTimeOriginal"] = temp
             create_date: str | None = exif_data.get(0x9004)
             if create_date:
-                data["CreateDate"] = create_date.rstrip().rstrip("\x00")
+                temp = create_date.rstrip().rstrip("\x00")
+                if temp != "0000:00:00 00:00:00":
+                    data["CreateDate"] = temp
             modify_date: str | None = exif_data.get(0x0132)
             if modify_date:
-                data["ModifyDate"] = modify_date.rstrip().rstrip("\x00")
+                temp = modify_date.rstrip().rstrip("\x00")
+                if temp != "0000:00:00 00:00:00":
+                    data["ModifyDate"] = temp
 
             offset_time: str | None = exif_data.get(0x9010)
             if offset_time:
