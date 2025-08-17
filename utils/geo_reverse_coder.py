@@ -7,8 +7,27 @@ import atexit
 from dataclasses import dataclass
 from typing import List
 from pydantic import BaseModel, ValidationError
+from enum import Enum, auto
 
 from utils.logger import Logger
+
+
+class CoordinateRef(Enum):
+    N = auto()
+    E = auto()
+    S = auto()
+    W = auto()
+
+
+def from_str_to_coordinate_ref(value: str) -> CoordinateRef | None:
+    mapping = {
+        "N": CoordinateRef.N,
+        "E": CoordinateRef.E,
+        "S": CoordinateRef.S,
+        "W": CoordinateRef.W,
+    }
+    return mapping.get(value.upper(), None)
+
 
 @dataclass
 class GeoData(BaseModel):
@@ -107,39 +126,53 @@ class ReverseGeocoder:
                 )
             self._cache_dirty = False
 
-    def _convert_gps_to_degrees(
-        self, gps_coord: tuple[str, str, str], gps_ref: str
+    def convert_gps_to_degrees(
+        self, gps_coord: tuple[float, float, float], gps_ref: CoordinateRef | str
     ) -> float | None:
-        """Convert GPS coordinates from EXIF format to decimal degrees."""
-        try:
-            degrees = float(gps_coord[0])
-            minutes = float(gps_coord[1])
-            seconds = float(gps_coord[2])
+        """Convert GPS coordinates from gps format to decimal degrees."""
+        if not isinstance(gps_ref, CoordinateRef):
+            temp = from_str_to_coordinate_ref(gps_ref)
+            if not temp:
+                return None
+            gps_ref = temp
 
-            decimal = degrees + (minutes / 60.0) + (seconds / 3600.0)
+        degrees = gps_coord[0]
+        minutes = gps_coord[1]
+        seconds = gps_coord[2]
 
-            if gps_ref in ["S", "W"]:
-                decimal = -decimal
+        decimal = degrees + (minutes / 60.0) + (seconds / 3600.0)
 
-            return decimal
-        except:
-            return None
+        if gps_ref in [CoordinateRef.S, CoordinateRef.W]:
+            decimal = -decimal
+
+        if gps_ref in [CoordinateRef.N, CoordinateRef.S]:
+            # latitude
+            if not (-90 <= decimal <= 90):
+                self._logger.error(f"Invalid latitude: {decimal}")
+                return None
+        elif gps_ref in [CoordinateRef.E, CoordinateRef.W]:
+            # longitude
+            if not (-180 <= decimal <= 180):
+                self._logger.error(f"Invalid longitude: {decimal}")
+                return None
+
+        return decimal
 
     def get_location_from_gps(
         self,
-        lat_gps_coord: tuple[str, str, str],
+        lat_gps_coord: tuple[float, float, float],
         lat_gps_ref: str,
-        lon_gps_coord: tuple[str, str, str],
+        lon_gps_coord: tuple[float, float, float],
         lon_gps_ref: str,
     ) -> GeoData | None:
-        lat = self._convert_gps_to_degrees(lat_gps_coord, lat_gps_ref)
+        lat = self.convert_gps_to_degrees(lat_gps_coord, lat_gps_ref)
         if lat is None:
             self._logger.error(
                 f"Invalid GPS coordinates for latitude: {lat_gps_coord}, {lat_gps_ref}"
             )
             return None
 
-        lon = self._convert_gps_to_degrees(lon_gps_coord, lon_gps_ref)
+        lon = self.convert_gps_to_degrees(lon_gps_coord, lon_gps_ref)
         if lon is None:
             self._logger.error(
                 f"Invalid GPS coordinates for longitude: {lon_gps_coord}, {lon_gps_ref}"
@@ -155,9 +188,9 @@ class ReverseGeocoder:
             return None
 
         # Use reverse geocoding service to get location
-        return self.reverse_geocode(lat, lon)
+        return self._reverse_geocode(lat, lon)
 
-    def reverse_geocode(self, lat: float, lon: float) -> GeoData | None:
+    def _reverse_geocode(self, lat: float, lon: float) -> GeoData | None:
         """Convert coordinates to location name using Nominatim (OpenStreetMap)."""
         coord_key = self._create_key(lat, lon)
         # Check cache first
