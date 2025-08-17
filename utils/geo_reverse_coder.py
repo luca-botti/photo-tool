@@ -229,10 +229,16 @@ class ReverseGeocoder:
             self._last_api_call = time.time()
 
             if response.status_code == 200:
+                json_data = response.json()
                 self._logger.trace(
-                    f"Reverse geocoding successful response for coordinates: [{lat}, {lon}] -> \n{response.json()}"
+                    f"Reverse geocoding successful response for coordinates: [{lat}, {lon}] -> \n{json_data}"
                 )
-                self._cache[coord_key] = GeoData.model_validate(response.json())
+                if json_data.get("error"):
+                    self._logger.error(
+                        f"API has returned an error for coordinates: [{lat}, {lon}], error: {json_data['error']}"
+                    )
+                    return None
+                self._cache[coord_key] = GeoData.model_validate(json_data)
                 self._logger.trace(
                     f"Reverse geocoding successful for coordinates: [{lat}, {lon}] -> \n{self._cache[coord_key]}"
                 )
