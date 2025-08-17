@@ -233,6 +233,7 @@ def normalize_datetime(date_str: str) -> datetime | None:
     formats = [
         "%Y:%m:%d %H:%M:%S",
         "%Y-%m-%d %H:%M:%S.%f",
+        "%Y-%m-%d %H:%M:%S:%f",
         "%Y-%m-%d %H:%M:%S",
     ]
     utc = date_str.find("UTC") != -1
