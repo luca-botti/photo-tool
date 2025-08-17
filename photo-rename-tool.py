@@ -4,8 +4,8 @@ Photo Organizer Script
 Organizes photos into a structured folder hierarchy based on date and location.
 
 Structure:
-- With location: {year}/{month}-{year}/{month}-{year}-{location}/{year}{month}{day}T{hour}{minute}{second}_{location}_{camera}[discriminator].{ext}
-- Without location: {year}/{month}-{year}/{year}{month}{day}T{hour}{minute}{second}_{camera}[discriminator].{ext}
+- With location: {year}/{month}-{year}/{month}-{year}-{location}/{year}{month}{day}T{hour}{minute}{second}_{location}_{camera}.{ext}
+- Without location: {year}/{month}-{year}/{year}{month}{day}T{hour}{minute}{second}_{camera}.{ext}
 """
 
 import os
@@ -302,6 +302,10 @@ def process_file(file_path: Path, disable_api: bool = False) -> bool:
         return False
 
     destination = destination_directory / destination_path_filename
+
+    if destination.exists():
+        logger.error(f"Destination file {destination} already exists.")
+        return False
 
     if dry_run:
         logger.no_header(f"[DRY RUN] {file_path.name} -> {destination_path_filename}")
