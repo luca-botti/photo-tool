@@ -110,9 +110,10 @@ def get_image_data(image_path: Path) -> dict[str, str | dict[str, str]]:
                 gps_dict: dict[str, str] = {}
                 for key, val in gps_data.items():
                     gps_tag = GPSTAGS.get(key, key)
-                    gps_dict[str(gps_tag).rstrip().rstrip("\x00")] = (
-                        str(val).rstrip().rstrip("\x00")
-                    )
+                    tag_temp = str(gps_tag).rstrip().rstrip("\x00")
+                    val_temp = str(val).rstrip().rstrip("\x00")
+                    if val_temp and "nan" not in val_temp:
+                        gps_dict[tag_temp] = val_temp
                 data["GPSInfo"] = gps_dict
         del image
     elif image_path.suffix.lower() in video_extensions:
@@ -292,6 +293,9 @@ def process_file(
                         lat, lat_ref, lon, lon_ref
                     )
                 else:
+                    logger.debug(
+                        f"No Valid GPS location data found for {file_path.name}."
+                    )
                     location = None
             else:
                 lat = float(location.get("GPSLatitude", 0))
@@ -299,6 +303,9 @@ def process_file(
                 if lat and lon:
                     location = geo_reverse.get_location_from_lat_lon(lat, lon)
                 else:
+                    logger.debug(
+                        f"No Valid GPS location data found for {file_path.name}."
+                    )
                     location = None
         else:
             logger.debug(f"No GPS location data found for {file_path.name}.")
