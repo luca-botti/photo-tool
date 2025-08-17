@@ -52,7 +52,9 @@ class Logger:
     def _should_log(self, level: LogLevel) -> bool:
         return level.value >= self.level.value
 
-    def _fmt(self, level: LogLevel, message: str) -> str:
+    def _fmt(self, level: LogLevel | None, message: str) -> str:
+        if level is None:
+            return message
         return f"[{self.name}] [{level.name}] {message}"
 
     def _end_fallback_progress_line(self):
@@ -60,14 +62,22 @@ class Logger:
             print(file=self.stream)
             self._progress_active_fallback = False
 
-    def _log_plain(self, level: LogLevel, message: str):
+    def _log_plain(self, level: LogLevel | None, message: str):
         self._end_fallback_progress_line()
         print(self._fmt(level, message), file=self.stream, flush=True)
 
     def _log(self, level: LogLevel, message: str):
         if not self._should_log(level):
             return
+        self.log(level, message)
 
+    def _log_no_header(self, level: LogLevel, message: str):
+        if not self._should_log(level):
+            return
+        self.log(None, message)
+
+    # ---------- public logging ----------
+    def log(self, level: LogLevel | None, message: str):
         if self.console:
             self.console.log(self._fmt(level, message), markup=False, highlight=False)
             # refresh the progress if active
@@ -76,7 +86,6 @@ class Logger:
         else:
             self._log_plain(level, message)
 
-    # ---------- public logging ----------
     def trace(self, message: str):
         self._log(LogLevel.TRACE, message)
 
@@ -96,27 +105,27 @@ class Logger:
         self._log(LogLevel.CRITICAL, message)
         sys.exit(1)
 
-    def info_no_header(self, message: str):
-        if not self._should_log(LogLevel.INFO):
-            return
-        if self.console:
-            self.console.log(message, markup=False, highlight=False)
-            # refresh the progress if active
-            if self._progress is not None:
-                self._progress.refresh()
-        else:
-            self._end_fallback_progress_line()
-            print(message, file=self.stream, flush=True)
-
     def no_header(self, message: str):
-        if self.console:
-            self.console.log(message, markup=False, highlight=False)
-            # refresh the progress if active
-            if self._progress is not None:
-                self._progress.refresh()
-        else:
-            self._end_fallback_progress_line()
-            print(message, file=self.stream, flush=True)
+        self.log(None, message)
+
+    def trace_no_header(self, message: str):
+        self._log_no_header(LogLevel.TRACE, message)
+
+    def debug_no_header(self, message: str):
+        self._log_no_header(LogLevel.DEBUG, message)
+
+    def info_no_header(self, message: str):
+        self._log_no_header(LogLevel.INFO, message)
+
+    def warning_no_header(self, message: str):
+        self._log_no_header(LogLevel.WARNING, message)
+
+    def error_no_header(self, message: str):
+        self._log_no_header(LogLevel.ERROR, message)
+
+    def critical_no_header(self, message: str):
+        self._log_no_header(LogLevel.CRITICAL, message)
+        sys.exit(1)
 
     def trace_unprintable_chars(self, message: str):
         """Log a message with unprintable characters replaced by their hex codes."""
