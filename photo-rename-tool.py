@@ -412,7 +412,7 @@ def main():
     done_list: dict[Path, Path] = {}
     image_extensions = {".jpg", ".jpeg", ".png"}
     video_extensions = {".mp4"}
-    other_extensions = {".heic", ".mov", ".avi", ".mkv", ".3gp", ".gif", ".mpg"}
+    other_extensions = {".heic", ".mov", ".avi", ".mkv", ".3gp", ".gif", ".mpg", ".vob"}
     logger = Logger("PhotoOrganizer", level=LogLevel.INFO)
     geo_reverse = ReverseGeocoder(
         logger=logger, user_agent="PhotoOrganizer/0.1", resolution=4.0
@@ -438,6 +438,11 @@ def main():
         help="Show what would be done without actually doing it",
     )
     parser.add_argument("--offline", action="store_true", help="Disable online calls")
+    parser.add_argument(
+        "--show-ignored",
+        action="store_true",
+        help="Show the list of files ignored and exit",
+    )
 
     args = parser.parse_args()
 
@@ -461,8 +466,8 @@ def main():
 
     move_mode = args.move
     dry_run = args.dry_run
+    show_ignored = args.show_ignored
     offline_mode = args.offline
-    # dry_run = True
 
     if offline_mode:
         logger.warning(
@@ -475,20 +480,24 @@ def main():
 
     logger.info(f"Starting photo organization...")
     logger.info(f"Source: {source_dir}")
-    logger.info(f"Destination: {destination_directory}")
-    logger.info(f"Mode: {'Move' if move_mode else 'Copy'}")
-    logger.info(f"Dry run: {'Yes' if dry_run else 'No'}")
+    if not show_ignored:
+        logger.info(f"Destination: {destination_directory}")
+        logger.info(f"Mode: {'Move' if move_mode else 'Copy'}")
+        logger.info(f"Dry run: {'Yes' if dry_run else 'No'}")
+        logger.info(f"Offline mode: {'Yes' if offline_mode else 'No'}")
+    logger.info(f"Show ignored: {'Yes' if show_ignored else 'No'}")
+
     logger.info("-" * 50)
     logger.info_no_header("")
 
     # Find all files
     image_files: list[Path] = []
     for ext in image_extensions:
-        image_files.extend(source_dir.rglob(f"*{ext}"))
+        image_files.extend(f for f in source_dir.rglob(f"*{ext}") if f.is_file())
     for ext in video_extensions:
-        image_files.extend(source_dir.rglob(f"*{ext}"))
+        image_files.extend(f for f in source_dir.rglob(f"*{ext}") if f.is_file())
     for ext in other_extensions:
-        image_files.extend(source_dir.rglob(f"*{ext}"))
+        image_files.extend(f for f in source_dir.rglob(f"*{ext}") if f.is_file())
 
     image_files.sort()
 
@@ -499,6 +508,17 @@ def main():
     for file in image_files:
         logger.trace(f"\t {file}")
     logger.trace_no_header("")
+
+    if show_ignored:
+        logger.info(f"Computing ignored files...")
+        total_file_list = [f for f in source_dir.rglob("*") if f.is_file()]
+        total_file_list.sort()
+        logger.debug(f"Total files in {source_dir} = {len(total_file_list)}")
+        ignored = [f for f in total_file_list if f not in image_files]
+        logger.no_header(f"Ignored {len(ignored)} files:")
+        for f in ignored:
+            logger.no_header(f"\t- {f}")
+        return
 
     for file_path in image_files:
         if process_file(file_path, done_list, offline_mode):
