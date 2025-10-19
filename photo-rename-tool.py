@@ -494,10 +494,19 @@ def main():
     image_files: list[Path] = []
     for ext in image_extensions:
         image_files.extend(f for f in source_dir.rglob(f"*{ext}") if f.is_file())
+        image_files.extend(
+            f for f in source_dir.rglob(f"*{ext.upper()}") if f.is_file()
+        )
     for ext in video_extensions:
         image_files.extend(f for f in source_dir.rglob(f"*{ext}") if f.is_file())
+        image_files.extend(
+            f for f in source_dir.rglob(f"*{ext.upper()}") if f.is_file()
+        )
     for ext in other_extensions:
         image_files.extend(f for f in source_dir.rglob(f"*{ext}") if f.is_file())
+        image_files.extend(
+            f for f in source_dir.rglob(f"*{ext.upper()}") if f.is_file()
+        )
 
     image_files.sort()
 
