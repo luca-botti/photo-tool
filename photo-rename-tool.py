@@ -475,8 +475,11 @@ def main():
         )
 
     if move_mode:
-        # logger.warning("Move mode is enabled. Files will be moved instead of copied.")
-        logger.critical("Move mode does not work at the moment.")
+        if show_ignored:
+            logger.warning("Activated move mode for ingored files")
+        else:
+            # logger.warning("Move mode is enabled. Files will be moved instead of copied.")
+            logger.critical("Move mode does not work at the moment.")
 
     logger.info(f"Starting photo organization...")
     logger.info(f"Source: {source_dir}")
@@ -526,7 +529,20 @@ def main():
         ignored = [f for f in total_file_list if f not in image_files]
         logger.no_header(f"Ignored {len(ignored)} files:")
         for f in ignored:
-            logger.no_header(f"\t- {f}")
+            if move_mode:
+                new_file_name = f.name
+                dest = destination_directory / new_file_name
+                while dest.exists():
+                    new_file_name = f"{new_file_name}.cpy"
+                    dest = destination_directory / new_file_name
+                if len(dest.name) > 200:
+                    logger.no_header(f"\t- {f} -> {dest} too long ignored")
+                else:
+                    shutil.move(f, dest)
+                    logger.no_header(f"\t- {f} -> {dest}")
+            else:
+                logger.no_header(f"\t- {f}")
+
         return
 
     for file_path in image_files:
