@@ -17,13 +17,19 @@ import json
 import fnmatch
 from datetime import datetime, timezone
 from pathlib import Path
-from PIL import Image
+from PIL import Image, UnidentifiedImageError
 from PIL.ExifTags import TAGS, GPSTAGS
-from filelock import FileLock
+from pymediainfo import MediaInfo
 
 from utils.geo_reverse_coder import ReverseGeocoder, GeoData
 from utils.logger import Logger, LogLevel
-from pymediainfo import MediaInfo
+from utils.auto_cleanup_file_lock import AutoCleanupFileLock
+
+
+class CorruptedImage(Exception):
+    """Custom exception for Image corruption."""
+
+    pass
 
 
 def convert_string_to_tuple(coord_string: str | None) -> tuple[str, str, str] | None:
@@ -57,8 +63,14 @@ def get_image_data(image_path: Path) -> dict[str, str | dict[str, str]]:
     data["FileModifiedDate"] = mod_time.strftime("%Y:%m:%d %H:%M:%S")
 
     if image_path.suffix.lower() in image_extensions:
-        with Image.open(image_path) as image:
-            exif_data = image.getexif()
+        try:
+            with Image.open(image_path) as image:
+                exif_data = image.getexif()
+        except UnidentifiedImageError as e:
+            raise e
+        except Exception as e:
+            logger.error(f"Failed to read EXIF data from {image_path}: {e}")
+            exif_data = None
 
         if exif_data:
 
@@ -119,7 +131,6 @@ def get_image_data(image_path: Path) -> dict[str, str | dict[str, str]]:
                     if val_temp and "nan" not in val_temp:
                         gps_dict[tag_temp] = val_temp
                 data["GPSInfo"] = gps_dict
-        del image
     elif image_path.suffix.lower() in video_extensions:
         media_info = MediaInfo.parse(image_path)
         if (
@@ -302,10 +313,8 @@ def process_file(
         and file_path.suffix.lower() not in other_extensions
     ):
         return False
-    lock = FileLock(str(file_path) + ".lock")
 
-    with lock:
-        data = get_image_data(file_path)
+    data = get_image_data(file_path)
 
     date_original = (
         data.get("DateTimeOriginal")
@@ -321,6 +330,7 @@ def process_file(
         logger.critical(
             f"Failed to normalize date: {date_original}, on file {file_path.name}"
         )
+        lock.release(force=True)
         return False
 
     location: GeoData | None = None
@@ -395,14 +405,13 @@ def process_file(
     if dry_run:
         logger.info(f"[DRY RUN] {file_path.name} -> {destination_path_filename}")
     else:
-        with lock:
-            destination_path = destination.parent
-            destination_path.mkdir(parents=True, exist_ok=True)
-            if move_mode:
-                shutil.move(file_path, destination)
-            else:
-                shutil.copy2(file_path, destination)
-            logger.debug(f"[DONE] {file_path.name} -> {destination_path_filename}")
+        destination_path = destination.parent
+        destination_path.mkdir(parents=True, exist_ok=True)
+        if move_mode:
+            shutil.move(file_path, destination)
+        else:
+            shutil.copy2(file_path, destination)
+        logger.debug(f"[DONE] {file_path.name} -> {destination_path_filename}")
 
     done_list[destination] = file_path
     return True
@@ -411,8 +420,8 @@ def process_file(
 def process_show_ignored(file_path: Path) -> bool:
     if not file_path.exists():
         return False
+
     if move_mode:
-        # coomputing new file name
 
         # get relative path of the file over the source directory
         relative_path = file_path.relative_to(source_dir)
@@ -429,11 +438,10 @@ def process_show_ignored(file_path: Path) -> bool:
         if dry_run:
             logger.info(f"[DRY RUN]\t- {file_path} -> {dest}")
         else:
-            with FileLock(str(file_path) + ".lock"):
-                destination_path = dest.parent
-                destination_path.mkdir(parents=True, exist_ok=True)
-                shutil.move(file_path, dest)
-                logger.debug(f"\t- {file_path} -> {dest}")
+            destination_path = dest.parent
+            destination_path.mkdir(parents=True, exist_ok=True)
+            shutil.move(file_path, dest)
+            logger.debug(f"\t- {file_path} -> {dest}")
     else:
         logger.info(f"\t- {file_path}")
     return True
@@ -444,7 +452,7 @@ def main():
     image_extensions = {".jpg", ".jpeg", ".png"}
     video_extensions = {".mp4"}
     other_extensions = {".heic", ".mov", ".avi", ".mkv", ".3gp", ".gif", ".mpg", ".vob"}
-    logger = Logger("PhotoOrganizer", level=LogLevel.DEBUG)
+    logger = Logger("PhotoOrganizer", level=LogLevel.INFO)
     geo_reverse = ReverseGeocoder(
         logger=logger, user_agent="PhotoOrganizer/0.1", resolution=4.0
     )
@@ -622,11 +630,12 @@ def main():
         ignored = [f for f in total_file_list if f not in image_files]
         logger.info(f"Ignored {len(ignored)} files:")
         for f in ignored:
-            if process_show_ignored(f):
-                processed_count += 1
-            else:
-                logger.error(f"Error processing {f}")
-                errors.append(f)
+            with AutoCleanupFileLock(f.with_name(f.name + ".lock")):
+                if process_show_ignored(f):
+                    processed_count += 1
+                else:
+                    logger.error(f"Error processing {f}")
+                    errors.append(f)
             logger.info_progress(
                 processed_count + len(errors),
                 len(ignored),
@@ -649,11 +658,16 @@ def main():
     done_list: dict[Path, Path] = {}
 
     for file_path in image_files:
-        if process_file(file_path, done_list, offline_mode):
-            processed_count += 1
-        else:
-            logger.error(f"Error processing {file_path}")
-            errors.append(file_path)
+        with AutoCleanupFileLock(file_path.with_name(file_path.name + ".lock")):
+            try:
+                if process_file(file_path, done_list, offline_mode):
+                    processed_count += 1
+                else:
+                    logger.error(f"Error processing {file_path}")
+                    errors.append(file_path)
+            except Exception as e:
+                logger.error(f"Error processing {file_path}: {e}")
+                errors.append(file_path)
         logger.info_progress(
             processed_count + len(errors),
             len(image_files),
