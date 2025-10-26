@@ -14,6 +14,7 @@ import re
 import shutil
 import ast
 import json
+import fnmatch
 from datetime import datetime, timezone
 from pathlib import Path
 from PIL import Image
@@ -295,7 +296,7 @@ def process_file(
     file_path: Path, done_list: dict[Path, Path], disable_api: bool = False
 ) -> bool:
     """Process a single image file."""
-    if (
+    if not file_path.exists() or (
         file_path.suffix.lower() not in image_extensions
         and file_path.suffix.lower() not in video_extensions
         and file_path.suffix.lower() not in other_extensions
@@ -392,7 +393,7 @@ def process_file(
             return False
 
     if dry_run:
-        logger.no_header(f"[DRY RUN] {file_path.name} -> {destination_path_filename}")
+        logger.info(f"[DRY RUN] {file_path.name} -> {destination_path_filename}")
     else:
         with lock:
             destination_path = destination.parent
@@ -407,13 +408,43 @@ def process_file(
     return True
 
 
+def process_show_ignored(file_path: Path) -> bool:
+    if not file_path.exists():
+        return False
+    if move_mode:
+        # coomputing new file name
+
+        # get relative path of the file over the source directory
+        relative_path = file_path.relative_to(source_dir)
+
+        # apply the realtive path to the destination directory
+        dest = destination_directory / relative_path
+        new_file_name = dest.name
+        while dest.exists():
+            new_file_name = f"{new_file_name}.cpy"
+            dest = destination_directory / new_file_name
+        if len(new_file_name) > 200:
+            logger.error(f"\t- {file_path} -> {dest} too long ignored")
+            return False
+        if dry_run:
+            logger.info(f"[DRY RUN]\t- {file_path} -> {dest}")
+        else:
+            with FileLock(str(file_path) + ".lock"):
+                destination_path = dest.parent
+                destination_path.mkdir(parents=True, exist_ok=True)
+                shutil.move(file_path, dest)
+                logger.debug(f"\t- {file_path} -> {dest}")
+    else:
+        logger.info(f"\t- {file_path}")
+    return True
+
+
 def main():
-    global logger, image_extensions, video_extensions, other_extensions, dry_run, move_mode, geo_reverse, destination_directory
-    done_list: dict[Path, Path] = {}
+    global logger, image_extensions, video_extensions, other_extensions, dry_run, move_mode, geo_reverse, destination_directory, source_dir
     image_extensions = {".jpg", ".jpeg", ".png"}
     video_extensions = {".mp4"}
     other_extensions = {".heic", ".mov", ".avi", ".mkv", ".3gp", ".gif", ".mpg", ".vob"}
-    logger = Logger("PhotoOrganizer", level=LogLevel.INFO)
+    logger = Logger("PhotoOrganizer", level=LogLevel.DEBUG)
     geo_reverse = ReverseGeocoder(
         logger=logger, user_agent="PhotoOrganizer/0.1", resolution=4.0
     )
@@ -443,9 +474,35 @@ def main():
         action="store_true",
         help="Show the list of files ignored and exit",
     )
+    parser.add_argument(
+        "--filter",
+        help='List of space separeted (single string) filter " files names or (regex patterns) ", valid only for --show-ignored',
+    )
 
     args = parser.parse_args()
 
+    move_mode = args.move
+    show_ignored = args.show_ignored
+    dry_run = args.dry_run
+    offline_mode = args.offline
+    filter: list[str] = []
+    filter_print: list[str] = []
+    if args.filter:
+        temp = args.filter.split()
+        for part in temp:
+            if re.search(r"\(|\)", part):
+                string = part.replace("(", "")
+                string = string.replace(")", "")
+                try:
+                    regex = fnmatch.translate(string)
+                except Exception:
+                    logger.error(f"Invalid regex pattern: {string} from '{part}'")
+                    continue
+                filter_print.append(string)
+                filter.append(regex)
+            else:
+                filter_print.append(part)
+                filter.append(part)
     # Validate source directory
     source_dir = Path(args.source)
     if not source_dir.exists():
@@ -455,19 +512,16 @@ def main():
         logger.critical(f"Source '{source_dir}' is not a directory")
 
     destination_directory = Path(args.destination)
-    if (
-        destination_directory.exists()
-        and destination_directory.is_dir()
-        and len(os.listdir(destination_directory)) > 0
-    ):
-        logger.critical(
-            f"Destination directory '{destination_directory}' is not empty."
-        )
-
-    move_mode = args.move
-    dry_run = args.dry_run
-    show_ignored = args.show_ignored
-    offline_mode = args.offline
+    if not (dry_run or (show_ignored and not move_mode)):
+        # Validate destination directory only if we are not using dry run or if we are not using show ignored with move mode
+        if (
+            destination_directory.exists()
+            and destination_directory.is_dir()
+            and len(os.listdir(destination_directory)) > 0
+        ):
+            logger.critical(
+                f"Destination directory '{destination_directory}' is not empty."
+            )
 
     if offline_mode:
         logger.warning(
@@ -481,14 +535,27 @@ def main():
             # logger.warning("Move mode is enabled. Files will be moved instead of copied.")
             logger.critical("Move mode does not work at the moment.")
 
+    if filter and not show_ignored:
+        logger.warning(
+            "--filter can only be used with --show-ignored, argument will be ignored."
+        )
+
     logger.info(f"Starting photo organization...")
     logger.info(f"Source: {source_dir}")
+    logger.info(f"Dry run: {'Yes' if dry_run else 'No'}")
     if not show_ignored:
+        logger.info(f"Show ignored: No")
         logger.info(f"Destination: {destination_directory}")
         logger.info(f"Mode: {'Move' if move_mode else 'Copy'}")
-        logger.info(f"Dry run: {'Yes' if dry_run else 'No'}")
         logger.info(f"Offline mode: {'Yes' if offline_mode else 'No'}")
-    logger.info(f"Show ignored: {'Yes' if show_ignored else 'No'}")
+    else:
+        logger.info(f"Show ignored: Yes")
+        logger.info(f"Mode: {'Move' if move_mode else 'Disabled'}")
+        if move_mode:
+            logger.info(f"Destination: {destination_directory}")
+        if filter:
+            logger.info(f"Filter: {', '.join(filter_print)}")
+            logger.debug(f"Filter with real used regex: {', '.join(filter)}")
 
     logger.info("-" * 50)
     logger.info_no_header("")
@@ -513,37 +580,73 @@ def main():
 
     image_files.sort()
 
-    processed_count = 0
-    errors: list[Path] = []
-
     logger.debug(f"Found {len(image_files)} image files to process.")
     for file in image_files:
         logger.trace(f"\t {file}")
     logger.trace_no_header("")
 
+    processed_count = 0
+    errors: list[Path] = []
+
+    logger.info_no_header("")
+
+    # show ingored functionality
+
     if show_ignored:
         logger.info(f"Computing ignored files...")
-        total_file_list = [f for f in source_dir.rglob("*") if f.is_file()]
+        if filter:
+            logger.info(f"Filtering is enabled.")
+        logger.debug("Counting total files...")
+        total_file_list: list[Path] = []
+        filtered_file_list: list[Path] = []
+        for f in source_dir.rglob("*"):
+            if f.is_file():
+                if filter:
+                    filtered = False
+                    for pattern in filter:
+                        if re.search(pattern, f.name):
+                            filtered_file_list.append(f)
+                            filtered = True
+                            break
+                    if filtered:
+                        continue
+                total_file_list.append(f)
+
         total_file_list.sort()
         logger.debug(f"Total files in {source_dir} = {len(total_file_list)}")
+        if filter:
+            logger.debug(f"Filtered files in {source_dir} = {len(filtered_file_list)}")
+            for f in filtered_file_list:
+                logger.trace(f"\t - {f}")
+        logger.debug("Computing ignored files...")
         ignored = [f for f in total_file_list if f not in image_files]
-        logger.no_header(f"Ignored {len(ignored)} files:")
+        logger.info(f"Ignored {len(ignored)} files:")
         for f in ignored:
-            if move_mode:
-                new_file_name = f.name
-                dest = destination_directory / new_file_name
-                while dest.exists():
-                    new_file_name = f"{new_file_name}.cpy"
-                    dest = destination_directory / new_file_name
-                if len(dest.name) > 200:
-                    logger.no_header(f"\t- {f} -> {dest} too long ignored")
-                else:
-                    shutil.move(f, dest)
-                    logger.no_header(f"\t- {f} -> {dest}")
+            if process_show_ignored(f):
+                processed_count += 1
             else:
-                logger.no_header(f"\t- {f}")
-
+                logger.error(f"Error processing {f}")
+                errors.append(f)
+            logger.info_progress(
+                processed_count + len(errors),
+                len(ignored),
+                prefix="Processing",
+                bar_length=50,
+            )
+        logger.end_progress()
+        logger.info_no_header("")
+        logger.info("-" * 50)
+        logger.info(f"Show ignored complete!")
+        logger.info(f"Processed: {processed_count} files")
+        logger.info(f"Errors: {len(errors)} files")
+        if errors:
+            logger.info(f"Error details:")
+            for error in errors:
+                logger.info(f"\t - {error}")
         return
+
+    # default processing
+    done_list: dict[Path, Path] = {}
 
     for file_path in image_files:
         if process_file(file_path, done_list, offline_mode):
