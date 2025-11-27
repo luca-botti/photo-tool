@@ -253,6 +253,7 @@ def normalize_dict_results(data: dict[str, str] | str | None) -> str | None:
 def normalize_datetime(date_str: str) -> datetime | None:
     """Normalize the datetime string to a consistent format."""
     formats = [
+        "%Y:%m:%d:%H:%M:%S",
         "%Y:%m:%d %H:%M:%S",
         "%Y-%m-%d %H:%M:%S.%f",
         "%Y-%m-%d %H:%M:%S:%f",
@@ -327,10 +328,9 @@ def process_file(
 
     date = normalize_datetime(date_original)
     if not date:
-        logger.critical(
+        logger.error(
             f"Failed to normalize date: {date_original}, on file {file_path.name}"
         )
-        lock.release(force=True)
         return False
 
     location: GeoData | None = None
